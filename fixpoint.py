@@ -9,7 +9,7 @@ import re
 from collections import deque
 from copy import deepcopy
 from functools import reduce
-from typing import Callable, Dict, Hashable, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, Hashable, Iterable, List, Optional, Sequence, Tuple
 
 
 class CacheSetState:
@@ -18,18 +18,6 @@ class CacheSetState:
         self.evicted_line = evicted
         self.state_len = max_age if not evicted else max_age + 1
         self.states = [set() for _ in range(self.state_len)]
-
-    def __str__(self):
-        if self.evicted_line:
-            state_str = ", ".join(['{}' if len(o) == 0 else o.__str__() for o in self.states[: -1]])
-            evicted_str = self.states[-1].__str__()
-            return f"line:[{state_str}] evict:{evicted_str}"
-        else:
-            state_str = ", ".join(['{}' if len(o) == 0 else o.__str__() for o in self.states])
-            return f"line:[{state_str}]"
-
-    def __repr__(self):
-        return "<CacheSetState {}>".format(self.__str__())
 
     def where(self, b: Hashable):
         for age, state in enumerate(self.states):
@@ -58,70 +46,76 @@ class CacheSetState:
             self.states[age].clear()
 
 
-def must_update(s: CacheSetState, b: Hashable) -> bool:
-    b_age = s.where(b)
-    is_hit = b_age != -1
-    b_age = b_age if is_hit else s.max_age
-    for age in reversed(range(0, b_age)):
-        s.age_shifting(age)
-    s.new_access_insert(b)
-    return is_hit
+class SetStateOperation:
 
+    UpdateFuncTy = Callable[[CacheSetState, Hashable], bool]
+    JoinFuncTy = Callable[[CacheSetState, CacheSetState], CacheSetState]
 
-def may_update(s: CacheSetState, b: Hashable) -> bool:
-    b_age = s.where(b)
-    is_hit = b_age != -1
-    b_age = b_age if is_hit else s.max_age - 1
-    for age in reversed(range(0, b_age + 1)):
-        s.age_shifting(age)
-    s.new_access_insert(b)
-    return is_hit
+    @staticmethod
+    def must_update(s: CacheSetState, b: Hashable) -> bool:
+        b_age = s.where(b)
+        is_hit = b_age != -1
+        b_age = b_age if is_hit else s.max_age
+        for age in reversed(range(0, b_age)):
+            s.age_shifting(age)
+        s.new_access_insert(b)
+        return is_hit
 
+    @staticmethod
+    def may_update(s: CacheSetState, b: Hashable) -> bool:
+        b_age = s.where(b)
+        is_hit = b_age != -1
+        b_age = b_age if is_hit else s.max_age - 1
+        for age in reversed(range(0, b_age + 1)):
+            s.age_shifting(age)
+        s.new_access_insert(b)
+        return is_hit
 
-def persistent_update(s: CacheSetState, b: Hashable):
-    b_age = s.where(b)
-    is_hit = (b_age != -1) and (b_age != s.max_age)
-    b_age = b_age if b_age != -1 else s.max_age
-    for age in reversed(range(0, b_age)):
-        s.age_shifting(age)
-    s.new_access_insert(b)
-    return is_hit
+    @staticmethod
+    def persistent_update(s: CacheSetState, b: Hashable):
+        b_age = s.where(b)
+        is_hit = (b_age != -1) and (b_age != s.max_age)
+        b_age = b_age if b_age != -1 else s.max_age
+        for age in reversed(range(0, b_age)):
+            s.age_shifting(age)
+        s.new_access_insert(b)
+        return is_hit
 
+    @staticmethod
+    def must_join(s1: CacheSetState, s2: CacheSetState):
+        new_s = CacheSetState(s1.max_age, evicted=False)
+        blocks = set(s1.all_blocks()).intersection(set(s2.all_blocks()))
+        for b in blocks:
+            age1, age2 = s1.where(b), s2.where(b)
+            new_s.states[max(age1, age2)].add(b)
+        return new_s
 
-def must_join(s1: CacheSetState, s2: CacheSetState):
-    new_s = CacheSetState(s1.max_age, evicted=False)
-    blocks = set(s1.all_blocks()).intersection(set(s2.all_blocks()))
-    for b in blocks:
-        age1, age2 = s1.where(b), s2.where(b)
-        new_s.states[max(age1, age2)].add(b)
-    return new_s
+    @staticmethod
+    def may_join(s1: CacheSetState, s2: CacheSetState):
+        new_s = CacheSetState(s1.max_age, evicted=False)
+        blocks = set(s1.all_blocks()).union(set(s2.all_blocks()))
+        for b in blocks:
+            age1, age2 = s1.where(b), s2.where(b)
+            target_age = min(age1, age2)
+            target_age = target_age if target_age != -1 else max(age1, age2)
+            new_s.states[target_age].add(b)
+        return new_s
 
+    @staticmethod
+    def persistent_join(s1: CacheSetState, s2: CacheSetState):
+        new_s = CacheSetState(s1.max_age, evicted=True)
+        blocks = set(s1.all_blocks()).union(set(s2.all_blocks()))
+        for b in blocks:
+            age1, age2 = s1.where(b), s2.where(b)
+            new_s.states[max(age1, age2)].add(b)
+        return new_s
 
-def may_join(s1: CacheSetState, s2: CacheSetState):
-    new_s = CacheSetState(s1.max_age, evicted=False)
-    blocks = set(s1.all_blocks()).union(set(s2.all_blocks()))
-    for b in blocks:
-        age1, age2 = s1.where(b), s2.where(b)
-        target_age = min(age1, age2)
-        target_age = target_age if target_age != -1 else max(age1, age2)
-        new_s.states[target_age].add(b)
-    return new_s
-
-
-def persistent_join(s1: CacheSetState, s2: CacheSetState):
-    new_s = CacheSetState(s1.max_age, evicted=True)
-    blocks = set(s1.all_blocks()).union(set(s2.all_blocks()))
-    for b in blocks:
-        age1, age2 = s1.where(b), s2.where(b)
-        new_s.states[max(age1, age2)].add(b)
-    return new_s
-
-
-def state_same(s1: CacheSetState, s2: CacheSetState):
-    for l1, l2 in zip(s1.states, s2.states):
-        if l1 != l2:
-            return False
-    return True
+    @staticmethod
+    def state_same(s1: CacheSetState, s2: CacheSetState):
+        for l1, l2 in zip(s1.states, s2.states):
+            if l1 != l2:
+                return False
+        return True
 
 
 class MemoryBlock:
@@ -161,35 +155,47 @@ class FixpointNode:
     def __init__(self, ident: str, access_blocks: Sequence[MemoryBlock]):
         self.ident = ident
         self.access_blocks = tuple(access_blocks)
+        self.is_hit: List[bool] = [False for _ in range(len(self.access_blocks))]
 
         self.incoming: List[FixpointNode] = list()
         self.outgoing: List[FixpointNode] = list()
 
-        self.in_state: Optional[CacheSetState] = None
-        self.out_state: Optional[CacheSetState] = None
-        self.is_hit: List[bool] = [False for _ in range(len(self.access_blocks))]
+        self.__in_state_by_set: Dict[int, CacheSetState] = dict()
+        self.__out_state_by_set: Dict[int, CacheSetState] = dict()
 
-    def __str__(self):
-        return "<{} ACC:{} IN:{}, OUT:{} IN_STAT:{}, OUT_STAT:{}>".format(
-            self.ident, self.access_blocks, self.incoming, self.outgoing, self.in_state, self.out_state
-        )
+    def clear_in_state(self):
+        self.__in_state_by_set.clear()
 
-    def __repr__(self):
-        return self.__str__()
+    def clear_out_state(self):
+        self.__out_state_by_set.clear()
+
+    def set_in_state(self, idx: int, s: CacheSetState):
+        self.__in_state_by_set[idx] = s
+
+    def get_in_state(self, idx: int) -> Optional[CacheSetState]:
+        return self.__in_state_by_set.get(idx, None)
+
+    def set_out_state(self, idx: int, s: CacheSetState):
+        self.__out_state_by_set[idx] = s
+
+    def get_out_state(self, idx: int) -> Optional[CacheSetState]:
+        return self.__out_state_by_set.get(idx, None)
 
 
 class FixpointGraph:
     def __init__(self, nodes: Iterable[str], edges: Iterable[Tuple[str, str], ...], access_mapping: Dict[str, Tuple[MemoryBlock, ...]]):
         """"""
         """ Build nodes and ident mapping. """
+        # For those nodes that do not have entry in access_mapping, the access block set is empty.
         self.all_nodes = [FixpointNode(ident,
-                                         access_blocks=access_mapping.get(ident, tuple())) for ident in nodes]
+                                       access_blocks=access_mapping.get(ident, tuple())) for ident in nodes]
         self.ident_mapping: Dict[str, FixpointNode] = {n.ident: n for n in self.all_nodes}
         """ All edges. """
         for src, dst in edges:
             try:
                 n_src, n_dst = self.ident_mapping[src], self.ident_mapping[dst]
             except KeyError:
+                # Ignore all unknown nodes.
                 pass
             else:
                 n_src.outgoing.append(n_dst)
@@ -209,9 +215,35 @@ class FixpointGraph:
             q.extend(unvisited_successor)
         return sorted_nodes
 
+    def fixpoint_set(self, set_idx: int, join_func: SetStateOperation.JoinFuncTy,
+                     update_func: SetStateOperation.UpdateFuncTy) -> bool:
+
+        is_fixpoint = True
+
+        for cur_node in self.all_nodes:
+            to_join_states = [pred.get_out_state(set_idx) for pred in cur_node.incoming]
+            if len(to_join_states) > 0:
+                joined_state = reduce(join_func, to_join_states)
+                cur_node.set_in_state(set_idx, joined_state)
+                in_eq = SetStateOperation.state_same(cur_node.get_in_state(set_idx), joined_state)
+            else:
+                in_eq = True
+            is_hit_eq = True
+            updated_out_state = deepcopy(cur_node.get_in_state(set_idx))
+            for idx, block in enumerate(cur_node.access_blocks):
+                if block.set_index != set_idx:
+                    continue
+                hit_flag: bool = update_func(updated_out_state, block)
+                is_hit_eq = is_hit_eq and (hit_flag == cur_node.is_hit[idx])
+                cur_node.is_hit[idx] = hit_flag
+            out_eq = SetStateOperation.state_same(cur_node.get_out_state(set_idx), updated_out_state)
+            cur_node.set_out_state(set_idx, updated_out_state)
+            is_fixpoint = is_fixpoint and (in_eq and is_hit_eq and out_eq)
+
+        return is_fixpoint
+
 
 def read_from_file(f: str) -> Tuple[CacheConfig, FixpointGraph]:
-
     node_pattern = re.compile(r"^\s*(\w+)\s*;.*$")
     edge_pattern = re.compile(r"^\s*(\w+)\s*->\s*(\w+)\s*;.*$")
     access_pattern = re.compile(r"^\s*\[\s*(\w+)\s*](.+);.*$")
@@ -299,79 +331,60 @@ def read_from_file(f: str) -> Tuple[CacheConfig, FixpointGraph]:
     return config, graph
 
 
-def fixpoint_set(graph: FixpointGraph, join_func: Callable, update_func: callable, set_idx: int) -> bool:
+def fixpoint(config: CacheConfig, graph: FixpointGraph, analysis_type: str, **kwargs):
+    """
+    Supported analysis type:
+     - must
+     - may
+     - persistent
+
+    Supported keyword arguments:
+     - ``considered_set``: [Sequence of int] Specify which sets to perform fixpoint iteration on. For default, all set is considered.
+     - ``yield_every_iter``: [bool, default ``False``] If ``True``, function will yield set index,
+       current iteration count and fixpoint flag after every iteration.
+     - ``no_init``: [bool, default ``False``] Do not initialize set state.
+     - ``max_iter``: [int, default 2147483648] The maximum number of iterations that can be accepted for each cache set.
+
+    :return: If all considered set reaches fixpoint.
+    """
+
+    set_number = int(2 ** config.set_index_len)
+    considered_set = set(kwargs.get('considered_set', range(set_number)))
+
+    def state_initialization(evicted: bool):
+        nonlocal set_number
+        if kwargs.get('no_init', False):
+            # Do not do cache set state initialization.
+            return
+        for n in graph.all_nodes:
+            for idx in considered_set:
+                n.set_in_state(idx, config.generate_set_state(evicted=evicted))
+                n.set_out_state(idx, config.generate_set_state(evicted=evicted))
+
+    if analysis_type == 'must':
+        state_initialization(False)
+        join_func, update_func = SetStateOperation.must_join, SetStateOperation.must_update
+    elif analysis_type == 'may':
+        state_initialization(False)
+        join_func, update_func = SetStateOperation.may_join, SetStateOperation.may_update
+    elif analysis_type == 'persistent':
+        state_initialization(True)
+        join_func, update_func = SetStateOperation.persistent_join, SetStateOperation.persistent_update
+    else:
+        raise ValueError("Unknown analysis type {}. Supported types are must, may and persistent.".format(analysis_type))
+
+    yield_every_iter = kwargs.get('yield_every_iter', False)
+    max_iter_number = kwargs.get('max_iter', int(2 ** 31))
+
     is_fixpoint = True
-    for cur_node in graph.all_nodes:
-        to_join_states = [pred.out_state for pred in cur_node.incoming]
-        if len(to_join_states) > 0:
-            joined_state = reduce(join_func, to_join_states)
-            cur_node.in_state = joined_state
-            in_eq = state_same(cur_node.in_state, joined_state)
-        else:
-            in_eq = True
-        is_hit_eq = True
-        updated_out_state = deepcopy(cur_node.in_state)
-        for idx, block in enumerate(cur_node.access_blocks):
-            if block.set_index != set_idx:
-                continue
-            
+    for set_idx in considered_set:
+        it = 0
+        is_set_fixpoint = False
+        while it < max_iter_number:
+            it += 1
+            is_set_fixpoint = graph.fixpoint_set(set_idx, join_func=join_func, update_func=update_func)
+            if yield_every_iter:
+                yield set_idx, it, is_set_fixpoint
+        is_fixpoint = is_fixpoint and is_set_fixpoint
 
-
-"""
-=======================================================================================================================================
-"""
-
-
-def round(self):
-    is_fixpoint = True
-    for cur_node_ident in self.__sorted_idents:
-        cur_node = self.__node_dict[cur_node_ident]
-        to_join_states = [self.__node_dict[pred].out_state for pred in cur_node.incoming]
-        if len(to_join_states) > 0:
-            joined_state = reduce(self.__join_func, to_join_states)
-            cur_node.in_state = joined_state
-            in_eq = state_same(cur_node.in_state, joined_state)
-        else:
-            in_eq = True
-        updated_out_state = deepcopy(cur_node.in_state)
-        for block in cur_node.access_blocks:
-            self.__update_func(updated_out_state, block)
-        out_eq = state_same(cur_node.out_state, updated_out_state)
-        cur_node.out_state = updated_out_state
-        is_fixpoint = is_fixpoint and in_eq and out_eq
     return is_fixpoint
-
-# class Fixpoint:
-#     def __init__(self, ty: FixpointType, entry: Hashable, all_nodes: Sequence[FixpointNode]):
-#         self.__join_func, self.__update_func = {
-#             FixpointType.Must: (must_join, must_update),
-#             FixpointType.May: (may_join, may_update),
-#             FixpointType.Persistent: (persistent_join, persistent_update)}.get(ty, (None, None))
-#         assert self.__join_func is not None, "Unknown fixpoint type {}.".format(ty)
-#         self.__node_dict: Dict[Hashable, FixpointNode] = {o.ident: o for o in all_nodes}
-#         self.__entry_ident = entry
-#         assert self.__entry_ident in self.__node_dict, \
-#             "Cannot find entry node {} in all given nodes {}.".format(self.__entry_ident, self.__node_dict)
-#         self.__pse_topsort()
-#
-#     def __pse_topsort(self):
-#         seq = list()
-#         checked, q = {self.__entry_ident}, deque([self.__entry_ident])
-#         while len(q) > 0:
-#             cur_node = self.__node_dict[q.popleft()]
-#             checked.add(cur_node.ident)
-#             seq.append(cur_node.ident)
-#             unvisited_successor = [out_ident for out_ident in cur_node.outgoing if out_ident not in checked]
-#             q.extend(unvisited_successor)
-#         self.__sorted_idents = tuple(seq)
-#
-#     @property
-#     def pse_topsort_seq(self):
-#         return self.__sorted_idents
-#
-
-#
-#     def run(self):
-#         is_fixpoint = False
-#         while not is_fixpoint:
-#             is_fixpoint = self.round()
