@@ -1,0 +1,66 @@
+;     ==== Information about TCFG. ====
+; ==== Nodes declaration and all edges. ====
+
+entry: n0   ; Specify the entry node, or the first node for default.
+
+n0 ;
+n1 ;
+n2 ;
+n3 ;
+n4 ;
+n5 ;
+n6 ;
+n7 ;
+n8 ;
+n9 ;
+n10;
+n11;
+n12;
+n13;
+n14;
+n15;
+
+n0  -> n3 ; Main
+n3  -> n12;
+n12 -> n13;
+n13 -> n1 ;
+n1  -> n14;
+n14 -> n2 ;
+n12 -> n4 ; Loop 1
+n4  -> n10;
+n10 -> n11;
+n11 -> n12;
+n10 -> n5 ; Loop 2
+n5  -> n8 ;
+n8  -> n9 ;
+n9  -> n10;
+n8  -> n6 ; Loop 3
+n6  -> n15;
+n15 -> n7 ;
+n7  -> n8 ;
+
+
+; ==== The memory access of all nodes. ====
+
+[n0 ] 0x77c-0x7b4;
+[n1 ] 0x7b4-0x7d0;
+[n2 ] 0x7d0-0x7dc;
+[n3 ] 0x7dc-0x7f0;
+[n4 ] 0x7f0-0x7f8, 0x1000, 0x1000;
+[n5 ] 0x7f8-0x800, 0x1000, 0x1020;
+[n6 ] 0x800-0x814;
+[n7 ] 0x814-0x820;
+[n8 ] 0x820-0x82c;
+[n9 ] 0x82c-0x838;
+[n10] 0x838-0x844;
+[n11] 0x844-0x850;
+[n12] 0x850-0x85c;
+[n13] 0x85c-0x86c;
+[n14] 0x660-0x670;
+[n15] 0x8ac-0x91c;
+
+; ==== Cache config ====
+
+cache_offset: 6     ; Cache offset bit length.
+cache_set_index: 8  ; Bit length of cache set number.
+cache_assoc: 4      ; Cache association.
