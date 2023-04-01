@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-@Time       : 2023/4/1 14:06
+@Time       : 2023/4/1 14:44
 @Author     : Juxin Niu (juxin.niu@outlook.com)
 @FileName   : fixpoint.py
-@Description: 
+@Description: Fixpoint algorithm for must, may and persistent cache analysis.
 """
 import re
 from collections import deque
@@ -239,8 +239,8 @@ def read_from_file(f: str) -> Tuple[CacheConfig, FixpointGraph, Dict[str, str]]:
                     raise ValueError("Unrecognized line.")
             except Exception as e:
                 raise ValueError(f"An error was encountered while processing line {idx}.\n"
-                                 f"<:Line Content:> {ln}\n"
-                                 f"<:Error Details:> {e}")
+                                 f"<:Line Content:> {ln.__repr__()}\n"
+                                 f"<:Error Details:> {e.__repr__()}")
 
     config = CacheConfig(int(other_param.get('cache_offset', 6)), int(other_param.get('cache_set_index', 8)), int(other_param.get('cache_assoc', 4)))
     graph = FixpointGraph(basic_results['nodes'], basic_results['edges'],
