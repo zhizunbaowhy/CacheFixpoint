@@ -9,7 +9,7 @@ import re
 from collections import deque
 from copy import deepcopy
 from functools import reduce
-from typing import Callable, Dict, Hashable, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Hashable, Iterable, List, Optional, OrderedDict, Sequence, Tuple, Union
 
 
 class CacheSetState:
@@ -40,7 +40,6 @@ class CacheSetState:
 
 
 class SetStateOperation:
-
     UpdateFuncTy = Callable[[CacheSetState, Hashable], bool]
     JoinFuncTy = Callable[[CacheSetState, CacheSetState], CacheSetState]
 
@@ -120,13 +119,16 @@ class CacheConfig:
         return CacheSetState(max_age=self.assoc, evicted=evicted)
 
 
-class FixpointNode:
-    def __init__(self, ident: str, access_blocks: Sequence[MemoryBlock]):
-        self.ident = ident
-        self.actual_range = None  # TODO: Implementation.
+RangeBlockMapTy = Tuple[Union[int, Tuple[int, int]], List[MemoryBlock]]
 
-        self.access_blocks = tuple(access_blocks)
-        self.range2blocks = None  # TODO: Implementation.
+
+class FixpointNode:
+    def __init__(self, ident: str, range_block_mapping: Sequence[RangeBlockMapTy]):
+        self.ident = ident
+
+        self.access_blocks = tuple([mb for _, mb_list in range_block_mapping for mb in mb_list])
+        self.__access_ranges = tuple([r for r, _ in range_block_mapping])
+        self.__range2num = tuple([len(mb_list) for _, mb_list in range_block_mapping])
         self.is_hit: List[bool] = [False] * len(self.access_blocks)
 
         self.incoming: List[FixpointNode] = list()
@@ -135,9 +137,9 @@ class FixpointNode:
         self.__in_state_by_set: Dict[int, CacheSetState] = dict()
         self.__out_state_by_set: Dict[int, CacheSetState] = dict()
 
-    def add_range(self, r: Tuple[int, int], b: List[MemoryBlock]):
-        # TODO: Implementation.
-        pass
+    def analysis_result(self):
+        return [(r, self.access_blocks[(rl := sum(self.__range2num[:i])): (rr := rl + self.__range2num[i])], self.is_hit[rl: rr])
+                for i, r in enumerate(self.__access_ranges)]
 
     def set_in_state(self, idx: int, s: CacheSetState):
         self.__in_state_by_set[idx] = s
@@ -153,8 +155,9 @@ class FixpointNode:
 
 
 class FixpointGraph:
-    def __init__(self, nodes: Iterable[str], edges: Iterable[Tuple[str, str]], access_mapping: Dict[str, Tuple[MemoryBlock, ...]], **kwargs):
-        self.all_nodes = [FixpointNode(ident, access_blocks=access_mapping.get(ident, tuple())) for ident in nodes]
+    def __init__(self, nodes: Iterable[str], edges: Iterable[Tuple[str, str]],
+                 access_mapping: Dict[str, Sequence[RangeBlockMapTy]], **kwargs):
+        self.all_nodes = [FixpointNode(ident, range_block_mapping=access_mapping.get(ident, list())) for ident in nodes]
         self.ident_mapping: Dict[str, FixpointNode] = {n.ident: n for n in self.all_nodes}
         self.entry = self.ident_mapping.get(kwargs.get('entry', -1), self.all_nodes[0])
         for src, dst in edges:
@@ -210,6 +213,8 @@ def read_from_file(f: str) -> Tuple[CacheConfig, FixpointGraph, Dict[str, str]]:
 
     basic_results, other_param = {'nodes': [], 'edges': [], 'access': dict()}, dict()
 
+    config = CacheConfig(int(other_param.get('cache_offset', 6)), int(other_param.get('cache_set_index', 8)), int(other_param.get('cache_assoc', 4)))
+
     with open(f, 'r', encoding='utf-8') as fp:
         for idx, ln in enumerate(fp.readlines()):
             try:
@@ -221,19 +226,17 @@ def read_from_file(f: str) -> Tuple[CacheConfig, FixpointGraph, Dict[str, str]]:
                 elif m := re.match(edge_pattern, line):
                     basic_results['edges'].append(tuple(m.groups()))
                 elif m := re.match(access_pattern, line):
-                    # TODO: Add mapping and recording from actual address (range) to corresponding memory block.
-                    #       And its backward-mapping.
                     node, acc = m.groups()
                     if node in basic_results['access']:
                         raise ValueError(f"There are multiple memory accesses to the node {node}.")
-                    acc_list = []
+                    acc_list: List[RangeBlockMapTy] = []
                     for item in [item.strip() for item in acc.split(',')]:
                         try:
                             addr_list = [int(a, 16) if a.startswith(('0x', '0X')) else int(a, 10) for a in [a.strip() for a in item.split('-')]]
                             if len(addr_list) == 1:
-                                acc_list.append((addr_list[0], addr_list[0] + 1))
+                                acc_list.append((a := addr_list[0], config.block_gen(a, a + 1)))
                             elif len(addr_list) == 2:
-                                acc_list.append((addr_list[0], addr_list[1]))
+                                acc_list.append(((addr_list[0], addr_list[1]), config.block_gen(*addr_list)))
                             else:
                                 raise RuntimeError
                         except Exception:
@@ -251,10 +254,8 @@ def read_from_file(f: str) -> Tuple[CacheConfig, FixpointGraph, Dict[str, str]]:
                                  f"<:Line Content:> {ln.__repr__()}\n"
                                  f"<:Error Details:> {e.__repr__()}")
 
-    config = CacheConfig(int(other_param.get('cache_offset', 6)), int(other_param.get('cache_set_index', 8)), int(other_param.get('cache_assoc', 4)))
     graph = FixpointGraph(basic_results['nodes'], basic_results['edges'],
-                          {ident: tuple([mb for r in trace for mb in config.block_gen(*r)]) for ident, trace in basic_results['access'].items()},
-                          **other_param)
+                          {ident: acc_info for ident, acc_info in basic_results['access'].items()}, **other_param)
     return config, graph, other_param
 
 
@@ -273,7 +274,6 @@ def fixpoint(config: CacheConfig, graph: FixpointGraph, analysis_type: str, **kw
     if analysis_type not in ['must', 'may', 'persistent']:
         raise ValueError(f"Unknown analysis type {analysis_type}. Supported types are must, may and persistent.")
 
-    # TODO: considered node.
     considered_set = set(kwargs.get('considered_set', range(int(2 ** config.set_index_len))))
 
     if not kwargs.get('no_init', False):
