@@ -123,7 +123,10 @@ class CacheConfig:
 class FixpointNode:
     def __init__(self, ident: str, access_blocks: Sequence[MemoryBlock]):
         self.ident = ident
+        self.actual_range = None  # TODO: Implementation.
+
         self.access_blocks = tuple(access_blocks)
+        self.range2blocks = None  # TODO: Implementation.
         self.is_hit: List[bool] = [False] * len(self.access_blocks)
 
         self.incoming: List[FixpointNode] = list()
@@ -131,6 +134,10 @@ class FixpointNode:
 
         self.__in_state_by_set: Dict[int, CacheSetState] = dict()
         self.__out_state_by_set: Dict[int, CacheSetState] = dict()
+
+    def add_range(self, r: Tuple[int, int], b: List[MemoryBlock]):
+        # TODO: Implementation.
+        pass
 
     def set_in_state(self, idx: int, s: CacheSetState):
         self.__in_state_by_set[idx] = s
@@ -214,6 +221,8 @@ def read_from_file(f: str) -> Tuple[CacheConfig, FixpointGraph, Dict[str, str]]:
                 elif m := re.match(edge_pattern, line):
                     basic_results['edges'].append(tuple(m.groups()))
                 elif m := re.match(access_pattern, line):
+                    # TODO: Add mapping and recording from actual address (range) to corresponding memory block.
+                    #       And its backward-mapping.
                     node, acc = m.groups()
                     if node in basic_results['access']:
                         raise ValueError(f"There are multiple memory accesses to the node {node}.")
@@ -254,6 +263,7 @@ def fixpoint(config: CacheConfig, graph: FixpointGraph, analysis_type: str, **kw
     Supported analysis type: ``[must, may, persistent]``
 
     Supported keyword arguments:
+     - ``considered_node``: [Sequence of hashable] Specify which nodes are considered during fixpoint. All nodes for default.
      - ``considered_set``: [Sequence of int] Specify which sets to perform fixpoint iteration on. For default, all set is considered.
      - ``no_init``: [bool, default ``False``] Do not initialize set state.
      - ``max_iter``: [int, default 2147483648] The maximum number of iterations that can be accepted for each cache set.
@@ -263,6 +273,7 @@ def fixpoint(config: CacheConfig, graph: FixpointGraph, analysis_type: str, **kw
     if analysis_type not in ['must', 'may', 'persistent']:
         raise ValueError(f"Unknown analysis type {analysis_type}. Supported types are must, may and persistent.")
 
+    # TODO: considered node.
     considered_set = set(kwargs.get('considered_set', range(int(2 ** config.set_index_len))))
 
     if not kwargs.get('no_init', False):
